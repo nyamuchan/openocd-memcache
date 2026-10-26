@@ -42,6 +42,7 @@
 #include "target.h"
 #include "target_type.h"
 #include "target_request.h"
+#include "target_mem_cache.h"
 #include "breakpoints.h"
 #include "register.h"
 #include "trace.h"
@@ -1269,6 +1270,17 @@ int target_read_memory(struct target *target,
 		LOG_TARGET_ERROR(target, "doesn't support read_memory");
 		return ERROR_FAIL;
 	}
+
+	/* Halt-scoped SRAM page cache (Wi-Fi DAP): serve or miss-fill pages. */
+	if (size > 0 && count <= UINT32_MAX / size) {
+		uint32_t nbytes = size * count;
+		int cret = target_mem_cache_read(target, address, nbytes, buffer);
+		if (cret == ERROR_OK)
+			return ERROR_OK;
+		if (cret != ERROR_TARGET_RESOURCE_NOT_AVAILABLE)
+			return cret;
+	}
+
 	return target->type->read_memory(target, address, size, count, buffer);
 }
 
@@ -1297,7 +1309,10 @@ int target_write_memory(struct target *target,
 		LOG_TARGET_ERROR(target, "doesn't support write_memory");
 		return ERROR_FAIL;
 	}
-	return target->type->write_memory(target, address, size, count, buffer);
+	int retval = target->type->write_memory(target, address, size, count, buffer);
+	if (retval == ERROR_OK && size > 0 && count <= UINT32_MAX / size)
+		target_mem_cache_write_update(target, address, size * count, buffer);
+	return retval;
 }
 
 int target_write_phys_memory(struct target *target,
@@ -2428,7 +2443,10 @@ int target_write_buffer(struct target *target, target_addr_t address, uint32_t s
 		return ERROR_FAIL;
 	}
 
-	return target->type->write_buffer(target, address, size, buffer);
+	int retval = target->type->write_buffer(target, address, size, buffer);
+	if (retval == ERROR_OK)
+		target_mem_cache_write_update(target, address, size, buffer);
+	return retval;
 }
 
 static int target_write_buffer_default(struct target *target,
@@ -2491,6 +2509,14 @@ int target_read_buffer(struct target *target, target_addr_t address, uint32_t si
 				  address,
 				  size);
 		return ERROR_FAIL;
+	}
+
+	{
+		int cret = target_mem_cache_read(target, address, size, buffer);
+		if (cret == ERROR_OK)
+			return ERROR_OK;
+		if (cret != ERROR_TARGET_RESOURCE_NOT_AVAILABLE)
+			return cret;
 	}
 
 	return target->type->read_buffer(target, address, size, buffer);
@@ -6429,7 +6455,10 @@ static const struct command_registration target_command_handlers[] = {
 
 int target_register_commands(struct command_context *cmd_ctx)
 {
-	return register_commands(cmd_ctx, NULL, target_command_handlers);
+	int retval = register_commands(cmd_ctx, NULL, target_command_handlers);
+	if (retval != ERROR_OK)
+		return retval;
+	return target_mem_cache_register_commands(cmd_ctx);
 }
 
 static bool target_reset_nag = true;
