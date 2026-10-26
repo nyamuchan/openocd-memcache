@@ -1,3 +1,72 @@
+# OpenOCD (wireless DAP fork)
+
+Personal fork of [OpenOCD](https://github.com/openocd-org/openocd) aimed at
+**high-RTT links** — especially **CMSIS-DAP over TCP / Wi-Fi** (e.g. ESP32 SoftAP
+adapters). Upstream OpenOCD content continues below.
+
+## What this fork adds
+
+Halt-scoped **SRAM page cache** (`memcache`) so GDB / FreeRTOS awareness does not
+pay one TCP round-trip per short memory read while the target is halted.
+
+- Opt-in via Tcl; off by default
+- On miss: fill a whole page through the target bulk read path
+- Write-through updates on successful writes
+- Invalidate on resume / debug-resume (single-step) / reset
+- Region size capped at 2 MiB
+
+Source: `src/target/target_mem_cache.c`
+
+## Quick start (CMSIS-DAP TCP + memcache)
+
+```sh
+openocd -s tcl \
+  -c "adapter driver cmsis-dap" \
+  -c "cmsis-dap backend tcp" \
+  -c "cmsis-dap tcp host 192.168.4.1" \
+  -c "cmsis-dap tcp port 4441" \
+  -c "transport select swd" \
+  -c "adapter speed 8000" \
+  -f target/stm32f1x.cfg \
+  -c "init" \
+  -c "memcache region 0x20000000 0x10000" \
+  -c "memcache page 8192" \
+  -c "memcache enable"
+```
+
+Replace the target script / SRAM `region` with your chip. Useful commands:
+
+```text
+memcache region <base> <size>   # e.g. 0x20000000 0x10000
+memcache page <bytes>           # power of two, >= 64 (default 1024)
+memcache enable | disable | flush | info
+```
+
+For GD32F303 + ESP SoftAP, see also the companion firmware /
+`openocd_esp_dap_tcp.cfg` style configs used with that adapter.
+
+## Build notes (Windows / MSYS2 UCRT64)
+
+```sh
+./bootstrap
+./configure --enable-internal-jimtcl --enable-cmsis-dap CFLAGS='-O2'
+make -j$(nproc)
+```
+
+If `bootstrap` fails on `configure.ac` under Git `core.autocrlf=true`, convert
+`configure.ac` to LF and ensure the internal-libjaylink `AS_IF` closings are
+`])` / `])` (not `]])` / `)`).
+
+## Syncing upstream
+
+```sh
+git remote add upstream https://git.code.sf.net/p/openocd/code   # once
+git fetch upstream
+git merge upstream/master   # or rebase
+```
+
+---
+
 # Welcome to OpenOCD
 
 OpenOCD provides on-chip programming and debugging support with a
